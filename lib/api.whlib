@@ -117,16 +117,22 @@ PUBLIC OBJECTTYPE MailChimpAPI
 
   BOOLEAN FUNCTION Post(STRING path, RECORD variables)
   {
-    RECORD call := this->PrepareCall(path);
-
-    RETURN this->browser->SendRawRequest("POST", call.url, this->GetHeaders(), StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+    RETURN this->PostOrPut(path, variables, TRUE);
   }
 
   BOOLEAN FUNCTION Put(STRING path, RECORD variables)
   {
+    RETURN this->PostOrPut(path, variables, FALSE);
+  }
+
+  BOOLEAN FUNCTION PostOrPut(STRING path, RECORD variables, BOOLEAN post)
+  {
     RECORD call := this->PrepareCall(path);
 
-    RETURN this->browser->SendRawRequest("PUT", call.url, this->GetHeaders(), StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+    RETURN this->browser->SendRawRequest(post ? "POST" : "PUT"
+                                       , call.url
+                                       , this->GetHeaders()
+                                       , StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
   }
 
   RECORD ARRAY FUNCTION GetHeaders()
