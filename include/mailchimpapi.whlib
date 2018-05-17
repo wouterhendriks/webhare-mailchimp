@@ -1,0 +1,136 @@
+<?wh
+LOADLIB "wh::datetime.whlib";
+LOADLIB "wh::files.whlib";
+LOADLIB "wh::internet/urls.whlib";
+LOADLIB "wh::internet/webbrowser.whlib";
+LOADLIB "module::system/cluster.whlib";
+LOADLIB "module::system/webserver.whlib";
+
+//FIXME: We're using version 1.3, which is pretty deprecated (v3 is on its way). There's no road map when 1.3 won't be useable anymore.
+
+OBJECT api;
+
+OBJECTTYPE MailChimpAPI
+<
+  STRING apikey;
+  STRING baseurl_13;
+
+  MACRO NEW(STRING apikey)
+  {
+    this->apikey := apikey;
+
+    STRING ARRAY apikeyparts := Tokenize(this->apikey, '-');
+    IF (Length(apikeyparts) != 2)
+      THROW NEW Exception("API key seems to be invalid (missing dash (-), which is followed by the region code: https://apidocs.mailchimp.com/api/1.3/index.php). API key: " || this->apiykey);
+
+    this->baseurl_13 := UpdateURLVariables("https://" || apikeyparts[1] || ".api.mailchimp.com/1.3/"
+                                         , [ apikey := this->apikey ]);
+  }
+
+  /** @short Subscribes a person to a list. More info: https://apidocs.mailchimp.com/api/1.3/listsubscribe.func.php
+      @param listid The id of the list, for example "3baec57e9b". Refer to http://kb.mailchimp.com/lists/managing-subscribers/find-your-list-id for more information.
+      @param email The user's email address
+      @param extradata Extra data to save with the subscription. Optional cells:
+
+      - firstname (STRING)
+      - lastname (STRING)
+      - double_optin (BOOLEAN) flag to control whether a double opt-in confirmation message is sent, defaults to true
+      @return Result
+      @cell return.success True if subscription is successfull
+      @cell return.errormessage If error, full error message
+      @cell return.errorcode Error code (https://apidocs.mailchimp.com/partnerapi/1.3/exceptions.field.php)
+  */
+  PUBLIC RECORD FUNCTION Subscribe(STRING listid, STRING email, RECORD extradata)
+  {
+    RECORD result := [ success := FALSE
+                     , errormessage := ""
+                     , errorcode := 0
+                     ];
+    /*
+      https://apidocs.mailchimp.com/api/1.3/index.php
+
+      The generic format for the API endpoint is:
+
+      http://<dc>.api.mailchimp.com/1.3/
+
+      Where <dc> should be replaced with the portion after the dash in your API Key. e.g. "us1", "us2", "uk1", etc.
+
+      A solid example - say your API Key is myapikey-us2. You are in us2, so your API Endpoint would be:
+
+      http://us2.api.mailchimp.com/1.3/
+    */
+    OBJECT browser := NEW WebBrowser;
+
+    STRING url := UpdateURLVariables(this->baseurl_13, [ method := "listSubscribe"
+                                                        , apikey := this->apikey
+                                                        , id := listid
+                                                        , email_address := email
+                                                        ]);
+
+    IF (CellExists(extradata, "firstname"))
+      url :=  UpdateURLVariables(url, [ "merge_vars[FNAME]" := extradata.firstname ]);
+
+    IF (CellExists(extradata, "lastname"))
+      url :=  UpdateURLVariables(url, [ "merge_vars[LNAME]" := extradata.lastname ]);
+
+    IF (CellExists(extradata, "double_optin"))
+      url :=  UpdateURLVariables(url, [ "double_optin" := (extradata.double_optin ? "true" : "false") ]);
+
+    browser->PostWebPage(url, DEFAULT RECORD ARRAY, "");
+
+    STRING response := BlobToString(browser->content);
+
+    IF (ToUpperCase(response) = "TRUE")
+    {
+      result.success := TRUE;
+      RETURN result;
+    }
+
+    result := DecodeJSON(response);// error, code
+    result := CellInsert(result, "success", FALSE);
+
+    RETURN result;
+  }
+
+  PUBLIC RECORD ARRAY FUNCTION GetCampaigns(RECORD settings)
+  {
+    // https://apidocs.mailchimp.com/api/1.3/campaigns.func.php
+    OBJECT browser := NEW WebBrowser;
+
+    STRING url := UpdateURLVariables(this->baseurl_13, [ method := "campaigns"
+                                                       ]);
+
+    browser->PostWebPage(url, DEFAULT RECORD ARRAY, "");
+
+    STRING response := BlobToString(browser->content);
+
+
+    RECORD result := DecodeJSON(response);
+    IF (TrimWhiteSpace(response) = ""
+        OR NOT RecordExists(result)
+        OR NOT CellExists(result,"data"))
+    {
+      RETURN DEFAULT RECORD ARRAY;
+    }
+
+    RETURN SELECT *
+                , create_time := MakeDateFromText(create_time)
+             FROM result.data;
+  }
+>;
+
+/** @short Returns the MailChimp API object.
+    @param apikey The API key associated with the MailChimp account (http://kb.mailchimp.com/accounts/management/about-api-keys)
+*/
+PUBLIC OBJECT FUNCTION GetMailChimpAPI(STRING apikey)
+{
+  IF (apikey = "")
+    THROW NEW Exception("Missing required API key");
+
+  IF (ObjectExists(api))
+    RETURN api;
+
+  api := NEW MailChimpAPI(apikey);
+
+  RETURN api;
+}

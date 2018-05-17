@@ -1,0 +1,156 @@
+<?wh
+LOADLIB "wh::datetime.whlib";
+LOADLIB "wh::files.whlib";
+LOADLIB "wh::internet/urls.whlib";
+LOADLIB "wh::internet/webbrowser.whlib";
+LOADLIB "mod::system/lib/cluster.whlib";
+LOADLIB "mod::system/lib/webserver.whlib";
+
+PUBLIC OBJECTTYPE MailChimpAPI
+<
+  STRING apikey;
+  STRING baseurl;
+  OBJECT browser;
+
+  RECORD json_encode_translations;
+
+  MACRO NEW(STRING apikey)
+  {
+    IF (apikey = "")
+      THROW NEW Exception("Missing required API key"); // https://kb.mailchimp.com/integrations/api-integrations/about-api-keys
+
+    STRING ARRAY apikeyparts := Tokenize(apikey, '-');
+    IF (Length(apikeyparts) != 2)
+      THROW NEW Exception("API key seems to be invalid: missing dash (-)"); // http://developer.mailchimp.com/documentation/mailchimp/guides/get-started-with-mailchimp-api-3/
+
+    this->apikey := apikey;
+    this->baseurl := "https://" || apikeyparts[1] || ".api.mailchimp.com/3.0";
+
+    this->browser := NEW WebBrowser;
+    this->browser->debug := TRUE;
+
+    this->json_encode_translations := [ "fname" := "FNAME", "lname" := "LNAME", "address" := "ADDRESS", "phone" := "PHONE", "birthday" := "BIRTHDAY" ];
+  }
+
+  PUBLIC RECORD ARRAY FUNCTION GetAllListMembers(STRING listid)
+  {
+    // this requires two steps: first get the total number of members in the list
+    STRING path := `/lists/${listid}/members/`;
+    RECORD listdata := this->Get(path,DEFAULT RECORD ARRAY);
+
+    // Now we know the total number of members, we can use the "count" variable to get 'm all
+    RECORD response := this->Get(path, [ [count := ToString(listdata.data.total_items)]
+                                        ,[fields := "members.id,members.email_address,members.status"]
+                                       ]);
+
+    RETURN response.data.members;
+  }
+
+  /** @short Adds a new list member
+      @param listid The id of the list, for example "3baec57e9b". Refer to http://kb.mailchimp.com/lists/managing-subscribers/find-your-list-id for more information.
+      @param options Body parameters (http://developer.mailchimp.com/documentation/mailchimp/reference/lists/members/#create-post_lists_list_id_members)
+      @return Return TRUE if subscription is successfull
+      @cell return.errormessage If error, full error message
+      @cell return.errorcode Error code (https://apidocs.mailchimp.com/partnerapi/1.3/exceptions.field.php)
+  */
+  PUBLIC RECORD FUNCTION AddListMember(STRING listid, RECORD options)
+  {
+    IF (NOT CellExists(options, "email_address")) // required field
+       THROW NEW Exception(`Missing cell 'email_address'`);
+
+    IF (NOT CellExists(options, "status")) // required, add if not present
+      options := CellInsert(options, "status", "subscribed");
+
+    RECORD result := [ success := FALSE
+                     , errormessage := ""
+                     , errorcode := 0
+                     ];
+
+    // first we need to know if this user exists; if so, we need to use a PUT call to update it
+    // FIXME: rather use http://developer.mailchimp.com/documentation/mailchimp/reference/lists/members/#read-get_lists_list_id_members_subscriber_hash
+    RECORD ARRAY allmembers := this->GetAllListMembers(listid);
+    RECORD currentmember :=
+        SELECT id, email_address, status
+          FROM allmembers
+         WHERE ToUpperCase(email_address) = ToUpperCase(options.email_address);
+
+    BOOLEAN success;
+
+    IF (RecordExists(currentmember))
+      success := this->Put(`/lists/${listid}/members/${currentmember.id}`, options);
+    ELSE
+      success := this->Post(`/lists/${listid}/members/`, options);
+
+    IF (NOT success)
+      RETURN this->GetBrowserError(this->browser->content);
+
+    RETURN [ success := TRUE ];
+  }
+
+  RECORD FUNCTION Get(STRING path, RECORD ARRAY urlParams)
+  {
+    RECORD call := this->PrepareCall(path);
+
+    STRING url := call.url;
+    FOREVERY (RECORD param FROM urlParams)
+      url := UpdateURLVariables(url, param);
+
+    BOOLEAN success := this->browser->GotoWebPage(url, DEFAULT RECORD);
+    IF (NOT success)
+      RETURN this->GetBrowserError(this->browser->content);
+
+    RETURN CELL [ success := TRUE
+                , data := DecodeJSON(BlobToString(this->browser->content))
+                ];
+  }
+
+  BOOLEAN FUNCTION Post(STRING path, RECORD variables)
+  {
+    RECORD call := this->PrepareCall(path);
+
+    STRING url := call.url;
+
+    RECORD ARRAY headers := [ [ field := "Content-Type", value := "application/json" ]
+                             ,[ field := "Authorization: Basic ", value := EncodeBase64("apikey:" || this->apikey) ]
+                            ];
+
+    RETURN this->browser->SendRawRequest("POST", url, headers, StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+  }
+
+  BOOLEAN FUNCTION Put(STRING path, RECORD variables)
+  {
+    RECORD call := this->PrepareCall(path);
+
+    STRING url := call.url;
+
+    RECORD ARRAY headers := [ [ field := "Content-Type", value := "application/json" ]
+                             ,[ field := "Authorization: Basic ", value := EncodeBase64("apikey:" || this->apikey) ]
+                            ];
+
+    RETURN this->browser->SendRawRequest("PUT", url, headers, StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+  }
+
+  RECORD FUNCTION GetBrowserError(BLOB browsercontent)
+  {
+    RECORD data := DecodeJSON(BlobToString(browsercontent));
+
+    RETURN [ success := FALSE
+           , errormessage := CellExists(data, "title") ? data.title : ""
+           , errorcode := CellExists(data, "status") ? data.status : 0
+           , errors := CellExists(data, "errors") ? data.errors : DEFAULT RECORD ARRAY
+           ];
+  }
+
+  RECORD FUNCTION PrepareCall(STRING path)
+  {
+    // check if the path starts with a slash. If not: add one
+    IF (LEFT(path,1) != "/")
+      path := "/" || path;
+
+    // setup the URL, by using the path and adding the apikey
+    STRING url := this->baseurl || path;
+    url := UpdateURLVariables(url, [ apikey := this->apikey ]);
+
+    RETURN CELL [ url ];
+  }
+>;
