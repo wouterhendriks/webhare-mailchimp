@@ -11,8 +11,10 @@ PUBLIC OBJECTTYPE MailChimpAPI
   STRING apikey;
   STRING baseurl;
   OBJECT browser;
-
   RECORD json_encode_translations;
+  BOOLEAN pvt_debug;
+
+  PUBLIC PROPERTY debug(-, SetDebug);
 
   MACRO NEW(STRING apikey)
   {
@@ -27,20 +29,33 @@ PUBLIC OBJECTTYPE MailChimpAPI
     this->baseurl := "https://" || apikeyparts[1] || ".api.mailchimp.com/3.0";
 
     this->browser := NEW WebBrowser;
-    this->browser->debug := TRUE;
 
-    this->json_encode_translations := [ "fname" := "FNAME", "lname" := "LNAME", "address" := "ADDRESS", "phone" := "PHONE", "birthday" := "BIRTHDAY" ];
+    this->json_encode_translations :=
+        [ "fname" := "FNAME"
+        , "lname" := "LNAME"
+        , "address" := "ADDRESS"
+        , "phone" := "PHONE"
+        , "birthday" := "BIRTHDAY"
+        ];
+  }
+
+  MACRO SetDebug(BOOLEAN val)
+  {
+    this->browser->debug := val;
   }
 
   PUBLIC RECORD ARRAY FUNCTION GetAllListMembers(STRING listid)
   {
     // this requires two steps: first get the total number of members in the list
     STRING path := `/lists/${listid}/members/`;
-    RECORD listdata := this->Get(path,DEFAULT RECORD ARRAY);
+
+    RECORD listdata := this->Get(path, DEFAULT RECORD ARRAY);
+    IF (listdata.success AND Length(listdata.data.members) = 0)
+      RETURN DEFAULT RECORD ARRAY;
 
     // Now we know the total number of members, we can use the "count" variable to get 'm all
-    RECORD response := this->Get(path, [ [count := ToString(listdata.data.total_items)]
-                                        ,[fields := "members.id,members.email_address,members.status"]
+    RECORD response := this->Get(path, [[ count := ToString(listdata.data.total_items) ]
+                                       ,[ fields := "members.id,members.email_address,members.status" ]
                                        ]);
 
     RETURN response.data.members;
@@ -61,14 +76,10 @@ PUBLIC OBJECTTYPE MailChimpAPI
     IF (NOT CellExists(options, "status")) // required, add if not present
       options := CellInsert(options, "status", "subscribed");
 
-    RECORD result := [ success := FALSE
-                     , errormessage := ""
-                     , errorcode := 0
-                     ];
-
     // first we need to know if this user exists; if so, we need to use a PUT call to update it
     // FIXME: rather use http://developer.mailchimp.com/documentation/mailchimp/reference/lists/members/#read-get_lists_list_id_members_subscriber_hash
     RECORD ARRAY allmembers := this->GetAllListMembers(listid);
+
     RECORD currentmember :=
         SELECT id, email_address, status
           FROM allmembers
@@ -108,26 +119,21 @@ PUBLIC OBJECTTYPE MailChimpAPI
   {
     RECORD call := this->PrepareCall(path);
 
-    STRING url := call.url;
-
-    RECORD ARRAY headers := [ [ field := "Content-Type", value := "application/json" ]
-                             ,[ field := "Authorization: Basic ", value := EncodeBase64("apikey:" || this->apikey) ]
-                            ];
-
-    RETURN this->browser->SendRawRequest("POST", url, headers, StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+    RETURN this->browser->SendRawRequest("POST", call.url, this->GetHeaders(), StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
   }
 
   BOOLEAN FUNCTION Put(STRING path, RECORD variables)
   {
     RECORD call := this->PrepareCall(path);
 
-    STRING url := call.url;
+    RETURN this->browser->SendRawRequest("PUT", call.url, this->GetHeaders(), StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+  }
 
-    RECORD ARRAY headers := [ [ field := "Content-Type", value := "application/json" ]
-                             ,[ field := "Authorization: Basic ", value := EncodeBase64("apikey:" || this->apikey) ]
-                            ];
-
-    RETURN this->browser->SendRawRequest("PUT", url, headers, StringToBlob(EncodeJSON(variables, this->json_encode_translations)));
+  RECORD ARRAY FUNCTION GetHeaders()
+  {
+    RETURN [[ field := "Content-Type", value := "application/json" ]
+           ,[ field := "Authorization: Basic ", value := EncodeBase64("apikey:" || this->apikey) ]
+           ];
   }
 
   RECORD FUNCTION GetBrowserError(BLOB browsercontent)
@@ -147,7 +153,7 @@ PUBLIC OBJECTTYPE MailChimpAPI
     IF (LEFT(path,1) != "/")
       path := "/" || path;
 
-    // setup the URL, by using the path and adding the apikey
+    // setup the URL
     STRING url := this->baseurl || path;
     url := UpdateURLVariables(url, [ apikey := this->apikey ]);
 
