@@ -50,6 +50,14 @@ PUBLIC OBJECTTYPE MailChimpAPI
     STRING path := `/lists/${listid}/members/`;
 
     RECORD listdata := this->Get(path, DEFAULT RECORD ARRAY);
+    IF (NOT listdata.success)
+    {
+      IF (listdata.errorcode = 404)
+        THROW NEW Exception(`Couldn't find list with id ${listid}`);
+
+      THROW NEW Exception(listdata.errormessage);
+    }
+
     IF (listdata.success AND Length(listdata.data.members) = 0)
       RETURN DEFAULT RECORD ARRAY;
 
@@ -91,6 +99,15 @@ PUBLIC OBJECTTYPE MailChimpAPI
       success := this->Put(`/lists/${listid}/members/${currentmember.id}`, options);
     ELSE
       success := this->Post(`/lists/${listid}/members/`, options);
+
+    IF (this->browser->GetHTTPStatusCode() = 400)
+    {
+      RECORD result := Decodejson(BlobToString(this->browser->content));
+      IF (RecordExists(result) AND CellExists(result, "detail"))
+        THROW NEW Exception(result.detail);
+
+      THROW NEW Exception(AnyToString(result,'tree'));
+    }
 
     IF (NOT success)
       RETURN this->GetBrowserError(this->browser->content);
