@@ -70,7 +70,7 @@ PUBLIC OBJECTTYPE MailChimpAPI
   }
 
   /** @short Adds a new list member
-      @param listid The id of the list, for example "3baec57e9b". Refer to http://kb.mailchimp.com/lists/managing-subscribers/find-your-list-id for more information.
+      @param listid The id of the list, for example "3baec57e9b". Refer to https://mailchimp.com/help/find-audience-id/ for more information.
       @param options Body parameters (http://developer.mailchimp.com/documentation/mailchimp/reference/lists/members/#create-post_lists_list_id_members)
       @return Return TRUE if subscription is successfull
       @cell return.errormessage If error, full error message
